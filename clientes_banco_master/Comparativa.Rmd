@@ -1,0 +1,359 @@
+---
+title: "Tasa de abandono. Comparativa de modelos"
+author: "Samuel LP"
+output:
+  html_document:
+    toc: true
+    toc_float: TRUE
+    theme: cerulean 
+    highlight: tango
+    code_folding: hide
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      message = FALSE,
+                      warning = FALSE)
+```
+
+# LIBRERÍAS Y DATOS
+
+
+```{r}
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(caret)
+  
+  library(parallel)
+  library(doParallel)
+  library(kableExtra)
+  library(formattable)
+  library(gridExtra)
+  library(ggpubr)
+  library(pROC)
+  
+
+  
+ 
+ })
+```
+
+Funciones:
+
+```{r}
+source('Funciones/func_resultados_modelos.R')
+```
+
+Datos:
+
+
+```{r}
+data <- read.csv("data_preproc/data_scale.csv", stringsAsFactors = TRUE)
+data_balanced <- read.csv("data_preproc/data_balanced_scale.csv", stringsAsFactors = TRUE)
+
+```
+
+Muestras:
+
+```{r}
+set.seed(2876)
+
+# Índice de partición
+Indice_Particion <- createDataPartition(data$y, p = 0.80, list = FALSE)
+
+# Muestras de entrenamiento y test para redes bayesianas
+
+train <- data[ Indice_Particion, ]
+val <- data[ -Indice_Particion, ]
+
+
+
+```
+
+
+```{r}
+
+set.seed(2877)
+
+# Índice de partición
+Indice_Particion <- createDataPartition(data_balanced$y, p = 0.80, list = FALSE)
+
+# Muestras de entrenamiento y test para gradient boosting
+train_balanced <- data_balanced[ Indice_Particion, ]
+val_balanced <- data_balanced[ -Indice_Particion, ]
+```
+
+
+Modelos:
+
+```{r}
+# datos sin balancear
+
+rf_train <- readRDS("Resultados_Modelos/rf_train.RDS")
+rl_train <- readRDS("Resultados_Modelos/rl_train.RDS")
+nnet_train <- readRDS("Resultados_Modelos/nnet_train.RDS")
+C5_train <- readRDS("Resultados_Modelos/C5_train.RDS")
+
+# datos balanceados
+
+rf_train_bal <- readRDS("Resultados_Modelos/rf_train_bal.RDS")
+rl_train_bal <- readRDS("Resultados_Modelos/rl_train_bal.RDS")
+nnet_train_bal <- readRDS("Resultados_Modelos/nnet_train_bal.RDS")
+C5_train_bal <- readRDS("Resultados_Modelos/C5_train_bal.RDS")
+```
+
+# IMPORTANCIA DE LAS VARIABLES
+
+En cada modelo se ha visto la importancia de cada variable. Aquí se verá de forma global para facilitar la comparación.
+
+
+```{r}
+# datos sin balancear
+
+ggarrange(importancia_var(rl_train, "de GLM"),
+importancia_var(C5_train, "de Árbol C5"),importancia_var(nnet_train, "de Red Neuronal"),importancia_var(rf_train, "de Random Forest"), ncol=2,nrow=2)
+```
+
+```{r}
+
+# datos balanceados
+
+ggarrange(importancia_var(rl_train_bal, "de GLM"),
+importancia_var(C5_train_bal, "de Árbol C5"),importancia_var(nnet_train_bal, "de Red Neuronal"),importancia_var(rf_train_bal, "de Random Forest"), ncol=2,nrow=2)
+```
+
+La variable de edad (Age) es relativamente importante en todos los modelos. Otras variables como IsActiveMember son más importantes en los modelos glm y red neuronal que en los modelos de árbol (C5 y RF) 
+
+# COMPARATIVA DE MODELOS
+
+Necesitamos la salida de la función resumen:
+
+```{r}
+resumen_rl <- resumen(rl_train,train, val)
+resumen_rf <- resumen(rf_train,train, val)
+resumen_nnet <- resumen(nnet_train, train, val)
+resumen_C5 <- resumen(C5_train,train, val)
+
+resumen_rl_bal <- resumen(rl_train_bal,train_balanced, val_balanced)
+resumen_rf_bal <- resumen(rf_train_bal,train_balanced, val_balanced)
+resumen_nnet_bal <- resumen(nnet_train_bal, train_balanced, val_balanced)
+resumen_C5_bal <- resumen(C5_train_bal,train_balanced, val_balanced)
+
+
+```
+
+
+```{r}
+Nombresmodelos <- c("RL", "RF", "MLP","C5")
+
+
+DatosEnt_RL <- resumen_rl[1,]
+DatosVal_RL <- resumen_rl[2,]
+DatosEnt_RF <- resumen_rf[1,]
+DatosVal_RF <- resumen_rf[2,]
+DatosEnt_MLP <- resumen_nnet[1,]
+DatosVal_MLP <- resumen_nnet[2,]
+DatosEnt_C5 <- resumen_C5[1,]
+DatosVal_C5 <- resumen_C5[2,]
+```
+
+```{r}
+DatosEnt_RL_bal <- resumen_rl_bal[1,]
+DatosVal_RL_bal <- resumen_rl_bal[2,]
+DatosEnt_RF_bal <- resumen_rf_bal[1,]
+DatosVal_RF_bal <- resumen_rf_bal[2,]
+DatosEnt_MLP_bal <- resumen_nnet_bal[1,]
+DatosVal_MLP_bal <- resumen_nnet_bal[2,]
+DatosEnt_C5_bal <- resumen_C5_bal[1,]
+DatosVal_C5_bal <- resumen_C5_bal[2,]
+```
+
+
+Se va a comparar los modelos usando la partición de entrenamiento y la partición de test. En ambos casos se ordenan resultados de mayor a menor AUC (puede elegirse otra métrica)
+
+Con los datos sin balancear tenemos:
+
+
+```{r}
+DatosEntrenamiento <- rbind(DatosEnt_RL, DatosEnt_RF,DatosEnt_MLP, DatosVal_C5)
+
+
+rownames(DatosEntrenamiento) <- Nombresmodelos
+
+DatosEntrenamiento <-as.data.frame(DatosEntrenamiento)
+
+DatosEntrenamiento %>% arrange(-AUC) %>% 
+    mutate(AUC = color_tile("white", "orange")(AUC),
+    Accuracy = color_tile("white", "orange")(Accuracy),
+    
+    Kappa = color_tile("white", "orange")(Kappa),
+    
+    Sensitivity = color_tile("white", "orange")(Sensitivity),
+    
+    Specificity = color_tile("white", "orange")(Specificity)
+    
+  ) %>%
+  kable(escape = F) %>%
+  kable_styling("hover", full_width = F) %>%
+  kable_styling("hover", full_width = F) %>%
+  add_header_above(c(" ", "Comparación con la Muestra de Entrenamiento" = 7))
+```
+
+
+
+```{r}
+DatosValidación <- rbind(DatosVal_RL, DatosVal_RF,
+                         DatosVal_MLP, DatosVal_C5)
+
+
+rownames(DatosValidación) <- Nombresmodelos
+DatosValidación <-as.data.frame(DatosValidación)
+
+DatosValidación %>% arrange(-AUC) %>% 
+    mutate(AUC = color_tile("white", "orange")(AUC),
+    Accuracy = color_tile("white", "orange")(Accuracy),
+   
+    Kappa = color_tile("white", "orange")(Kappa),
+    
+    Sensitivity = color_tile("white", "orange")(Sensitivity),
+    
+    Specificity = color_tile("white", "orange")(Specificity)
+    
+  ) %>%
+  kable(escape = F) %>%
+  kable_styling("hover", full_width = F) %>%
+  add_header_above(c(" ", "Comparación con la Muestra de Validacion" = 7))
+```
+
+
+Con los datos balanceados:
+
+```{r}
+DatosEntrenamiento_bal <- rbind(DatosEnt_RL_bal, DatosEnt_RF_bal,DatosEnt_MLP_bal, DatosVal_C5_bal)
+
+
+rownames(DatosEntrenamiento_bal) <- Nombresmodelos
+
+DatosEntrenamiento_bal <-as.data.frame(DatosEntrenamiento_bal)
+
+DatosEntrenamiento_bal %>% arrange(-AUC) %>% 
+    mutate(AUC = color_tile("white", "orange")(AUC),
+    Accuracy = color_tile("white", "orange")(Accuracy),
+    
+    Kappa = color_tile("white", "orange")(Kappa),
+    
+    Sensitivity = color_tile("white", "orange")(Sensitivity),
+    
+    Specificity = color_tile("white", "orange")(Specificity)
+    
+  ) %>%
+  kable(escape = F) %>%
+  kable_styling("hover", full_width = F) %>%
+  kable_styling("hover", full_width = F) %>%
+  add_header_above(c(" ", "Comparación con la Muestra de Entrenamiento" = 7))
+```
+
+```{r}
+DatosValidación_bal <- rbind(DatosVal_RL_bal, DatosVal_RF_bal,
+                         DatosVal_MLP_bal, DatosVal_C5_bal)
+
+
+rownames(DatosValidación_bal) <- Nombresmodelos
+DatosValidación_bal <-as.data.frame(DatosValidación_bal)
+
+DatosValidación_bal %>% arrange(-AUC) %>% 
+    mutate(AUC = color_tile("white", "orange")(AUC),
+    Accuracy = color_tile("white", "orange")(Accuracy),
+   
+    Kappa = color_tile("white", "orange")(Kappa),
+    
+    Sensitivity = color_tile("white", "orange")(Sensitivity),
+    
+    Specificity = color_tile("white", "orange")(Specificity)
+    
+  ) %>%
+  kable(escape = F) %>%
+  kable_styling("hover", full_width = F) %>%
+  add_header_above(c(" ", "Comparación con la Muestra de Validacion" = 7))
+```
+
+Se puede comprobar que el modelo RF parece tener un problema de sobreajuste (métricas perfectas con los datos de entramiento). Las mejores opciones podrían serel árbol C5 y la red neuronal.
+
+La mayor diferencia en el resultado con los datos balanceados y sin balancear es que la diferencia entre sensibilidad y especificidad es menor con los datos balanceados. Se sacrifica sensibilidad en el proceso.
+
+Se está en un problema de churn y una alta sensibilidad ayudaría a detectar clientes que realmente abandonarán el banco. Pero si la especificidad es baja se está también identificando de forma incorrecta a clientes que no abandonarán el banco como si lo fueran a hacer (falsos positivos).
+
+
+
+# CONTRATES DE HIPÓTESIS
+
+A continuación se va a estimar si los modelos son significativamente diferentes unos de otros. Se toman las medidas de precisión (accuracy), kappa, ROC, sensibilidad y especificidad
+
+Empezamos con los modelos sobre datos balanceados:
+
+```{r}
+modelos <- list(RL= rl_train, RF = rf_train,  MLP = nnet_train, C5 = C5_train)
+```
+
+```{r}
+comp_modelos <- resamples(modelos)
+comp_modelos
+```
+
+
+
+```{r}
+summary(comp_modelos)
+
+```
+
+Si se comprueba la media de cada métrica en cada modelo, se observa que son parecidas. El modelo base (RL) es el único que se desvía en mayor medida.
+
+Gráficamente:
+
+```{r}
+dotplot(comp_modelos)
+```
+
+Se hace lo mismo con el grupo balanceado
+
+
+```{r}
+modelos_bal <- list(RL= rl_train_bal, RF = rf_train_bal,  MLP = nnet_train_bal, C5 = C5_train_bal)
+```
+
+```{r}
+comp_modelos_bal <- resamples(modelos_bal)
+comp_modelos_bal
+```
+
+```{r}
+summary(comp_modelos_bal)
+
+```
+
+```{r}
+dotplot(comp_modelos_bal)
+```
+
+Comportamiento similar de RL (modelo lineal generalizado, base o glm). 
+
+
+En el siguiente contraste, la hipótesis nula es que no existen diferencias entre los modelos (H0: difference = 0). Los elementos por debajo de la diagonal nos da el p-valor. Si dicho p-valor fuera muy bajo (<0.05 si el nivel de confianza elegido es del 95%) se rechazaría la hipótesis nula y los modelos son significativamente diferentes
+
+
+```{r}
+diferencias <- diff(comp_modelos)
+summary(diferencias)
+```
+
+```{r}
+diferencias_bal <- diff(comp_modelos_bal)
+summary(diferencias_bal)
+```
+
+En ambos grupos, el modelo lineal generalizado tiene diferencias significativas respecto al resto de modelos. El resto de modelos son similares entre sí
+
+
+

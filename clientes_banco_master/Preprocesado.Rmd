@@ -1,0 +1,585 @@
+---
+title: "Tasa de abandono. Preprocesado"
+author: "Samuel LP"
+output:
+  html_document:
+    toc: true
+    toc_float: TRUE
+    theme: cerulean 
+    highlight: tango
+    code_folding: hide
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      message = FALSE,
+                      warning = FALSE)
+```
+
+
+En este proyecto piden realizar un análisis de la tasa de abandono de clientes de un banco y, mediante la aplicación de algunos algoritmos de aprendizaje automático (Machine Learning), sacar un modelo que explique dicha tasa de abandono en función del resto de variables.
+
+Este notebook se centra en la visualización y análisis de variables, transformaciones y en el preprocesado.
+
+# LIBRERÍAS Y DATOS
+
+Se cargan las librerías necesarias:
+
+
+```{r}
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(kableExtra)
+  library(lares)
+  library(inspectdf)
+  library(funModeling)
+  library(gmodels)
+  library(flextable)
+  library(dlookr)
+ 
+ })
+```
+
+
+Los datos se pueden encontrar en Kaggle a través de [este enlace](https://www.kaggle.com/datasets/radheshyamkollipara/bank-customer-churn/data).
+
+```{r}
+data <- read_csv("data_original/churn.csv")
+
+str(data)
+```
+
+Son 10,000 observaciones (filas, clientes,...) y 18 variables llamadas:
+
+```{r}
+colnames(data)
+```
+
+Para simplificar se van a eliminar algunas variables que parecen irrelevantes para el problema. Estas variables son:
+
+- RowNumber (indicativo de fila)
+- CustomerId (identificativo del cliente)
+- Surname (apellido del cliente)
+- Complain (si hubo quejas o no)
+- Satisfaction Score (puntuación sobre resolución de la queja)
+- Card Type (tipo de tarjeta de crédito)
+- Point Earned (puntos obtenido por usar la tarjeta de crédito)
+
+Sería necesario un análisis más completo antes de desechar estas variables, pero no parecen que vayan a ayudar a explicar la salida de un cliente
+
+Respecto a Complain, se ha desechado por ser similar a la variable objetivo (Exited) y por tanto ser una variable redundante. Se puede comprobar aquí: 
+
+
+```{r}
+table(data$Exited, data$Complain)
+```
+
+Como se pude observar, casi el 100% de los clientes que emitieron una queja acabaron por abandonar el banco. Puede ser interesante mantener la variable en este apartado de visualización y preprocesado, pero no aportará nada relevante en la aplicación de modelos. En cualquier caso, se ha optado por eliminarla.
+
+Aplicamos los cambios
+
+```{r}
+data <- data %>% 
+  select(-c(RowNumber, CustomerId, Surname, Complain, `Satisfaction Score`, `Card Type`, `Point Earned`))
+```
+
+
+Nuestras variables finales van a ser:
+
+- CreditScore: solvencia del cliente.
+- Geography: país
+- Gender: género
+- Age: edad
+- Tenure: cuantos años ha estado el cliente con el banco
+- Balance: cantidad actualmente disponible en la cuenta
+- NumOfProduct: número de productos comprados a través del banco.
+- HasCrCard: tiene una tarjeta de crédito o no
+- IsActiveMember: miembro activo o inactivo.
+- EstimatedSalary: estimación ingresos del cliente.
+- Exited: indicador de si el cliente se ha ido o no del banco.
+
+Hay variables que son categóricas, pero que se han cargado como numéricas o de tipo caracter. Se recodifican:
+
+```{r}
+data <- data %>%
+  mutate(HasCrCard = as.factor(ifelse(HasCrCard == 1, "Yes", "No")),
+         IsActiveMember = as.factor(ifelse(IsActiveMember == 1, "Yes", "No")),
+        Exited = as.factor(ifelse(Exited == 1, "Yes", "No")),
+        Geography = as.factor(Geography),
+        Gender = as.factor(Gender))
+```
+
+Primeras filas del dataset:
+
+
+```{r}
+head(data) %>%
+  kable("html") %>%
+  kable_styling(bootstrap_options = c("bordered","condensed","responsive",'striped'),
+                font_size = 14, full_width = F) %>%
+  scroll_box(width = "100%")
+```
+
+Estructura final:
+
+
+```{r}
+df_str(data, return = "plot")
+
+```
+
+
+# ANÁLISIS DESCRIPTIVO Y SUMARIOS ESTADÍSTICOS
+
+```{r}
+summary(data)
+```
+
+
+```{r}
+df_status(data)
+
+```
+
+
+# VALORES AUSENTES Y REPETIDOS
+
+A través de otras funciones se ha visto que no existen valores ausentes. Se vuelve a comprobar:
+
+```{r}
+show_plot(inspect_na(data))
+```
+
+No hay valores ausentes
+
+También se comprueba que no haya valores repetidos (duplicados)
+
+
+```{r}
+sum(duplicated(data))
+
+```
+
+No hay filas duplicadas
+
+# ANÁLISIS DE VARIABLES
+
+En este apartado se analizan individualmente las variables separando variables numéricas de variables categóricas.
+
+## VARIABLES NUMÉRICAS
+
+La función profiling_num selecciona automáticamente las variables numéricas y ofrece algnas estadísticas de interés como media, desviación, coeficiente de varianción, percentiles, asimetría, cúrtosis, etc...
+
+```{r}
+profiling_num(data)
+
+```
+
+A continuación se crean boxplots cruzando las variables numéricas con la variable objetivo (Exited). La función plotar lo hace con una linea de código
+
+```{r}
+plotar(data, target= "Exited", plot_type="boxplot")
+
+```
+
+Parece haber diferencias en el comportamiento de algunas variables en función de los valores de la variable exited. Comprobamos si esas diferencias son significativas a través del test de Levene y del test T
+
+```{r}
+car::leveneTest(CreditScore ~ Exited, data = data, center = "median")
+```
+
+
+Con un p-valor menor que 0.05 se puede deducir que hay evidencia significativa para rechazar la hipótesis nula de igualdad de varianza. El siguiente paso es comprobar lo mismo para la igualdad de medias con t.test()
+
+
+```{r}
+t.test(CreditScore ~ Exited, data = data,var.equal = FALSE )
+
+```
+
+De nuevo podemos rechazar la hipótesis de igualdad de medias (p-valor = 0.009).
+
+Se comprueban el resto de variables:
+
+```{r}
+car::leveneTest(Age ~ Exited, data = data, center = "median")
+```
+
+```{r}
+t.test(Age ~ Exited, data = data,var.equal = FALSE )
+
+```
+
+
+```{r}
+car::leveneTest(Tenure ~ Exited, data = data, center = "median")
+```
+
+```{r}
+t.test(Tenure ~ Exited, data = data,var.equal = FALSE )
+
+```
+
+```{r}
+car::leveneTest(Balance ~ Exited, data = data, center = "median")
+```
+
+```{r}
+t.test(Balance ~ Exited, data = data,var.equal = FALSE )
+
+```
+
+```{r}
+car::leveneTest(EstimatedSalary ~ Exited, data = data, center = "median")
+```
+
+```{r}
+t.test(EstimatedSalary ~ Exited, data = data,var.equal = FALSE )
+
+```
+
+```{r}
+car::leveneTest(NumOfProducts ~ Exited, data = data, center = "median")
+```
+
+```{r}
+t.test(NumOfProducts ~ Exited, data = data,var.equal = FALSE )
+
+```
+
+En este primer análisis se puede ver que  credit score, balance y age son variables significativas.
+
+Finalmente se ven los histogramas para ver la distribución de las variables
+
+```{r}
+show_plot(inspect_num(data))
+
+```
+
+## VARIABLES CATEGÓRICAS
+
+Se comprueban ahora las variables categóricas
+
+```{r}
+freq(data)
+```
+
+Se puede ver que la variable objetivo Exited no está especialmente desbalanceada (80/20).
+
+Se cruzan estas variables con la variable objetivo
+
+
+```{r}
+categoricas <- data %>%
+  select(where(is.factor))
+
+
+categ_analysis(categoricas, target = 'Exited')
+
+```
+
+
+```{r}
+cross_plot(categoricas, target = 'Exited', auto_binning = TRUE )
+
+```
+
+
+Para ver si existe un grado de asociación significativo entre variables categóricas y la variable objetivo se puede hacer un test de contingencia
+
+Este test nos permite comprobar el grado de asociación entre variables
+
+
+```{r}
+CrossTable(data$Geography,data$Exited, expected = TRUE, format="SPSS")
+
+```
+
+Al ser el p-value menor que 0,05 (nivel de significación elegido), la conclusión que se extrae es que no son independientes, es decir, se puede afirmar que existe cierto grado de asociación entre el país donde se realizan las operaciones financieras y la fuga de clientes
+
+Repetimos el test con el resto de variables:
+
+
+```{r}
+CrossTable(data$Gender,data$Exited, expected = TRUE, format="SPSS")
+
+```
+
+```{r}
+CrossTable(data$HasCrCard,data$Exited, expected = TRUE, format="SPSS")
+
+```
+
+```{r}
+CrossTable(data$IsActiveMember,data$Exited, expected = TRUE, format="SPSS")
+
+```
+
+
+Conclusiones: existe cierto grado de asociación entre la variable objetivo (Exited) y Geography, Gender y IsActiveMember
+
+# CORRELACIÓN
+
+Se comprueba la correlación entre variables numéricas
+
+```{r}
+show_plot(inspect_cor(data))
+```
+
+
+No existe correlación alta entre variables. La más destacable es entre el número de productos y el balance, pero no es demasiado alta (negativa y en torno a 0.3)
+
+```{r}
+numericas <- data %>%
+  select(where(is.numeric))
+```
+
+
+# VALORES ATÍPICOS U OUTLIERS
+
+Se usa la librería dlookr para el análisis de valores anómalos.
+
+```{r}
+data %>%
+    diagnose_outlier(CreditScore, Age,Tenure, Balance, NumOfProducts, EstimatedSalary)%>%
+kable("html") %>%
+  kable_styling(bootstrap_options = c("bordered","condensed","responsive",'striped'),
+                font_size = 12, full_width = F)
+```
+
+Se puede comprobar que, allá donde existen valores anómalos, las medias entre los datos con outliers y los datos sin outliers son muy similares:
+
+Gráficamente
+
+```{r}
+data %>%
+    plot_outlier(CreditScore, Age, NumOfProducts)
+```
+
+
+Las distribuciones no cambian demasiado con o sin outliers.
+
+Se puede hacer el mismo análisis cruzando resultados con la variable objetivo
+
+```{r}
+data %>%
+  target_by(Exited) %>% 
+    plot_outlier(CreditScore, Age, NumOfProducts)
+```
+
+
+Tras ver los resultados se puede concluir que trabajar con outliers o sin ellos, en principio, no tendría que alterar sustancialmente los resultados.
+
+Aunque siempre es mejor comprobar los algoritmos y modelos con ambas opciones (con y sin outlier), en este caso usaremos los valores originales sin tratar los valores anómalos.
+
+# BALANCEO DE LA MUESTRA
+
+Como vimos antes, la proporción 80/20 no se considera un desbalanceo excesivo
+
+```{r}
+data %>%
+  group_by(Exited) %>%
+  summarise(Total = n()) %>%
+  kable("html") %>%
+  kable_styling(bootstrap_options = c("bordered","condensed","responsive",'striped'),
+                full_width = F)
+```
+
+En cualquier caso, se ha decidido realizar el balanceo de la base de datos a través del [método del cubo](https://cude.es/submit-a-manuscript/index.php/CUDE/article/view/15). Es una técnica de submuestreo. Tanto el submuestreo como el sobremuestreo tienen inconvenientes, pero se ha preferido la pérdida de datos a la creación de datos sintéticos y artificiales.
+
+Los modelos se aplicaran a los datos sin balancear y a los datos equilibrados
+
+Antes, se va a realizar un modelo simple para seleccionar las variables indicadoras que integren el submuestreo.
+
+
+```{r}
+library(MASS)
+modelo.glm <- glm(Exited ~ ., data = data, family=binomial)
+
+modelo.stp <- stepAIC(modelo.glm, scope = list(upper = modelo.glm$formula, lower = ~1), direction = "both")
+```
+
+
+
+```{r}
+modelo.stp$formula
+```
+
+El siguiente bloque de código es la aplicación del método del cubo para reducir los casos de la clase mayoritaria (Exited = No)
+
+
+```{r}
+library(sampling)
+
+# Separamos los datos por Exited
+
+data.yes <- data[ data$Exited == 'Yes', ]
+data.no <- data[ data$Exited == 'No', ]
+
+# Número de casos Exited = Yes
+
+n.data.yes <- nrow( data.yes )
+
+# Creamos las variables indicadores para cada las variables elegidas del modelo glm
+
+# Vector de unos
+UNO = rep( 1, dim( data.no )[ 1 ] ) 
+
+# Variables cuantitativas 
+X1 <- data.no[ , c("CreditScore", "Age", "Tenure", "Balance", "NumOfProducts")]
+
+# Variables cualitativas
+
+disjunctive(data.no$Geography) -> X2
+colnames(X2) <- levels(data.no$Geography)
+
+
+disjunctive(data.no$Gender) -> X3
+colnames(X3) <- levels(data.no$Gender)
+
+
+disjunctive(data.no$IsActiveMember) -> X4
+colnames(X4) <- levels(data.no$IsActiveMember)
+
+
+# Matriz de diseño
+
+X <- as.matrix(cbind(UNO, X1, X2, X3, X4))
+
+# Tamaño de la muestra
+
+nB = 2038
+nA = nrow(data.no)
+
+# Probabilidades de inclusión en la muestra
+
+pik = rep(nB/nA,nA)
+
+# extraccion de la muestra
+set.seed( 123456 )
+s = samplecube( X, pik, method = 2, order = 1, comment = FALSE ) 
+
+muestra.no = cbind(data.no, s)
+muestra.no <- subset(data.no, s == 1)
+muestra.no$s <- NULL
+```
+
+
+Con esto, se ha reducido 7962 registros donde Exited = No a 2038 registros.
+
+Se va a comprobar la calidad de la muestra (desviación absoluta y relativa entre datos originales y el submuestreo)
+
+```{r}
+Totales <- apply(X, 2, sum)
+Horvitz.Thompson <- apply(X * s / pik, 2, sum)
+calidad <- cbind.data.frame(Totales, Horvitz.Thompson)
+calidad$Desv.Abs. <- round(calidad$Totales - calidad$Horvitz.Thompson, 2)
+calidad$Desv.Rel. <- round((calidad$Totales / calidad$Horvitz.Thompson - 1) *100, 2)
+print(as.matrix.data.frame(calidad))
+```
+
+Verificación de calidad de la muestra a través de gráficos (solo Balance y Tenure a modo de ejemplo):
+
+```{r}
+# muestra inicial vs muestra balanceada
+
+
+tenure_ini <- density(data.no$Tenure)
+
+tenure_fin  <- density(muestra.no$Tenure)
+
+plot(tenure_ini, lwd = 2, col = "red", xlab = "", ylab = "", xaxt = "n", yaxt = "n", main = "")
+
+par(new=T)
+
+plot(tenure_fin, lwd = 2, col = "blue", xlab = "", main = "Variable Tenure")
+legend(x = "topright", legend = c("Inicial", "Final"), lty = c(1, 1), col = c("red", "blue"), lwd = 2)
+```
+
+
+```{r}
+# muestra inicial vs muestra balanceada
+
+
+balance_ini <- density(data.no$Balance)
+
+balance_fin  <- density(muestra.no$Balance)
+
+plot(balance_ini, lwd = 2, col = "red", xlab = "", ylab = "", xaxt = "n", yaxt = "n", main = "")
+
+par(new=T)
+
+plot(balance_fin, lwd = 2, col = "blue", xlab = "", main = "Variable balance")
+legend(x = "topright", legend = c("Inicial", "Final"), lty = c(1, 1), col = c("red", "blue"), lwd = 2)
+```
+
+Se generan los datos balanceados
+
+
+```{r}
+muestra.yes <- data[data$Exited == "Yes",]
+
+# Data frame resultante
+data_balanced <- rbind( muestra.yes, muestra.no)
+
+# Tabla de frecuencias de variable dependiente. Como vemos, los datos están ya balanceados
+table(data_balanced$Exited)
+```
+
+# ESCALADO Y CENTRADO DE VARIABLES NUMERICAS
+
+Los rangos de las variables numéricas son muy diferentes por lo que quizás convendría escalar y centrar los datos.
+
+
+```{r}
+data_scale <- data %>%
+  mutate(across(where(is.numeric), scale))
+
+data_balanced_scale <- data_balanced %>%
+  mutate(across(where(is.numeric), scale))
+```
+
+Un vistazo al resultado
+
+```{r}
+head(data_scale, 5) %>%
+  kable() %>%
+  kable_styling(bootstrap_options = 'striped', font_size = 12, full_width = F) %>%
+  scroll_box(width = "100%")
+```
+
+
+```{r}
+head(data_balanced_scale, 5) %>%
+  kable() %>%
+  kable_styling(bootstrap_options = 'striped', font_size = 12, full_width = F) %>%
+  scroll_box(width = "100%")
+```
+
+En los modelos se usarán los datos escalados
+
+# CREACIÓN DE DATASETS FINALES PARA MODELOS
+
+Antes de aplicar modelos y para finalizar el preprocesado, se van a generar los ficheros de datos resultantes.
+
+En los modelos se usan unas funciones facilitadas por el equipo docente del master cursado. Para el correcto uso de dichas funciones la variable objetivo debe ser renombrada (variable Y)
+
+```{r}
+
+colnames(data_scale)[11]<-"y"
+colnames(data_balanced_scale)[11]<-"y"
+
+```
+
+Se generan archivos csv para usarlos en la segunda parte del proyecto:
+
+```{r}
+
+# write.csv(data_scale, file = 'data_preproc/data_scale.csv',row.names = FALSE)
+
+# write.csv(data_balanced_scale, file = 'data_preproc/data_balanced_scale.csv',row.names = FALSE)
+
+```
+
+

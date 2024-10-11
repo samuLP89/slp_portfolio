@@ -1,0 +1,783 @@
+---
+title: "Tasa de abandono. Aplicación de Modelos"
+author: "Samuel LP"
+output:
+  html_document:
+    toc: true
+    toc_float: TRUE
+    theme: cerulean 
+    highlight: tango
+    code_folding: hide
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      message = FALSE,
+                      warning = FALSE)
+```
+
+# LIBRERÍAS Y DATOS
+
+
+```{r}
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(caret)
+  
+  library(parallel)
+  library(doParallel)
+  library(kableExtra)
+  library(formattable)
+  library(gridExtra)
+  library(ggpubr)
+  library(pROC)
+  
+  
+ 
+ })
+```
+
+Se cargan los datos resultado del preprocesado anterior. Se usan los datos sin equilibrar y los datos balanceados. Ambos escalados y centrados
+
+
+```{r}
+data <- read.csv("data_preproc/data_scale.csv", stringsAsFactors = TRUE)
+data_balanced <- read.csv("data_preproc/data_balanced_scale.csv", stringsAsFactors = TRUE)
+
+str(data)
+```
+
+```{r}
+str(data_balanced)
+```
+
+Se cargan las funciones para la salida de resultados (fueron proporcionadas por el equipo docente):
+
+```{r}
+source('Funciones/func_resultados_modelos.R')
+```
+
+# TRAIN/TEST, VALIDACIÓN Y MÉTRICA
+
+Se va a usar el 80% de los datos para entrenamiento y el 20% restante para validación y test
+
+```{r}
+set.seed(2876)
+
+# Índice de partición
+Indice_Particion <- createDataPartition(data$y, p = 0.80, list = FALSE)
+
+# Muestras de entrenamiento y test para redes bayesianas
+
+train <- data[ Indice_Particion, ]
+val <- data[ -Indice_Particion, ]
+
+
+
+```
+
+```{r}
+
+set.seed(2877)
+
+# Índice de partición
+Indice_Particion <- createDataPartition(data_balanced$y, p = 0.80, list = FALSE)
+
+# Muestras de entrenamiento y test para gradient boosting
+train_balanced <- data_balanced[ Indice_Particion, ]
+val_balanced <- data_balanced[ -Indice_Particion, ]
+```
+
+
+Por limitaciones de hardware y para dar rapidez a la salida de resultados se va a usar validación cruzada (repeatedcv) con 5 pliegues y 1 repetición (que es equivalente a la validación cruzada sin repetición que también está como opción en Caret)
+
+La métrica elegida para decidir el mejor modelo es ROC
+
+
+```{r}
+# Cada modelo se ha entrenado con entrena <- 1 y posteriormente se han guardado los resultados. Se hace así para evitar volver a entrenar los modelos en la compilación del Rmarkdown
+entrena <- 0
+```
+
+
+```{r}
+fiveStats = function(...) c (twoClassSummary(...), defaultSummary(...))
+
+control <- trainControl( method = "repeatedcv",
+                         number = 5, 
+                         repeats = 1,
+                         classProbs = TRUE,
+                         summaryFunction = fiveStats,
+                         returnResamp = "final",
+                         allowParallel = TRUE)
+metrica <- "ROC"
+```
+
+Los modelos fueron entrenados y guardados como RDS antes de compilar el rmarkdown. Para evitar errores en la compilación, se van a cargar los modelos ahora. 
+
+```{r}
+rf_train <- readRDS("Resultados_Modelos/rf_train.RDS")
+rl_train <- readRDS("Resultados_Modelos/rl_train.RDS")
+nnet_train <- readRDS("Resultados_Modelos/nnet_train.RDS")
+C5_train <- readRDS("Resultados_Modelos/C5_train.RDS")
+
+
+rf_train_bal <- readRDS("Resultados_Modelos/rf_train_bal.RDS")
+rl_train_bal <- readRDS("Resultados_Modelos/rl_train_bal.RDS")
+nnet_train_bal <- readRDS("Resultados_Modelos/nnet_train_bal.RDS")
+C5_train_bal <- readRDS("Resultados_Modelos/C5_train_bal.RDS")
+```
+
+
+# APLICACIÓN DE MODELOS: DATOS SIN BALANCEAR
+
+## MODELO LINEAL GENERALIZADO
+
+Lo usaremos como modelo base
+
+```{r}
+if (entrena  == 1) {
+set.seed(7)
+
+
+
+
+clusterCPU <- makePSOCKcluster(detectCores() - 1)
+registerDoParallel(clusterCPU)
+  
+rl_train <- train(y~.,
+                  data = train,
+                  method = 'glm',
+                  family = binomial,
+                  metric = metrica, 
+                  trControl = control)
+  
+rl_train
+ 
+stopCluster(clusterCPU)
+clusterCPU <- NULL
+
+
+
+
+} 
+```
+
+Se guarda el RDS del modelo.
+
+```{r}
+# saveRDS(rl_train, "Resultados_Modelos/rl_train.RDS")
+```
+
+Y se usan las funciones para ver los resultados
+
+```{r}
+resultados(rl_train , "Regresión Logística")
+
+```
+
+
+
+```{r}
+curvas_ROC(rl_train , "Regresión logística", train, val)
+
+```
+
+```{r}
+validation(rl_train , "RL", train, val)
+
+```
+
+```{r}
+resumen_rl <- resumen(rl_train,train, val)
+
+```
+
+
+```{r}
+resumen_rl %>% kable(escape = F) %>%
+  kable_styling("hover", full_width = F) %>%
+  add_header_above(c(" ", "Regresión logística " = 7))
+```
+
+
+```{r}
+importancia_var(rl_train, "de Regresión logística ")
+
+```
+
+
+Como se puede observar, el modelo tiene un porcentaje considerable de falsos positivos (especificidad de 0.20)
+
+## RANDOM FOREST
+
+En los siguientes modelos, a diferencia del modelo base, se usan parámetros.
+
+El parámetro mtry es el nº de variables aleatorias que se probarán para encontrar la mejor división en cada nodo.
+
+Mientras que un valor bajo introduce más diversidad en los árboles individuales (reduce correlación entre árboles y mejor generalización), un valor alto permitirá a cada árbol use más información (mejor ajuste, pero riesgo de sobreajuste, mayor correlación)
+
+
+```{r}
+if (entrena  == 1) {
+set.seed(7)
+
+
+clusterCPU <- makePSOCKcluster(detectCores()-1)
+registerDoParallel(clusterCPU)
+
+rfGrid <-  expand.grid(mtry = c(2,4,6,8,10))
+
+rf_train <- train(y ~ ., data = train, method = "rf", metric = metrica, trControl = control, tuneGrid = rfGrid)
+
+
+
+stopCluster(clusterCPU)
+clusterCPU <- NULL
+
+
+}
+
+```
+
+```{r}
+# saveRDS(rf_train, "Resultados_Modelos/rf_train.RDS")
+```
+
+
+```{r}
+rf_train
+```
+
+```{r}
+grafico_metricas(rf_train)
+
+```
+
+
+```{r}
+resultados(rf_train, "Random Forest")
+
+```
+
+
+```{r}
+mejor_modelo(rf_train)
+
+```
+
+
+```{r}
+curvas_ROC(rf_train, "de Random Forest", train, val)
+
+```
+
+
+```{r}
+validation(rf_train, "RF", train, val)
+
+```
+
+
+
+```{r}
+
+resumen_rf <- resumen(rf_train,train, val)
+
+resumen_rf %>% kable(escape = F) %>%
+  kable_styling("hover", full_width = F) %>%
+  add_header_above(c(" ", "Random forest " = 7))
+```
+
+```{r}
+importancia_var(rf_train, "RF")
+
+```
+
+## RED NEURONAL
+
+El parámetro size se refiere al nº de unidades en la capa oculta. Menor size implica menor capacidad de capturar patrones complejos en los datos y mayor size es lo contrario. Los riesgos son el subajuste y el sobreajuste respectivamente
+
+
+Decay es la tasa de regularización de los pesos de la red. Es una penalización L2 agregada a la función de pérdida. Un mayor valor en decay implica una penalización más fuerte de los pesos (previene el sobreajuste)
+    
+```{r}
+if (entrena  == 1) {
+set.seed(7)
+
+
+
+clusterCPU <- makePSOCKcluster(detectCores()-1)
+registerDoParallel(clusterCPU)
+
+
+nnetGrid <-  expand.grid(size = c(1:10), decay =c(0.01, 0.05, 0.5 ,0.1))
+
+nnet_train <- train(y ~ ., data = train, method = "nnet", metric = metrica, trControl = control, tuneGrid = nnetGrid)
+
+stopCluster(clusterCPU)
+
+
+}
+
+
+nnet_train
+```
+
+```{r}
+# saveRDS(nnet_train, "Resultados_Modelos/nnet_train.RDS")
+
+```
+
+
+```{r}
+grafico_metricas(nnet_train)
+
+```
+
+```{r}
+resultados(nnet_train, "Red Neuronal")
+
+```
+
+```{r}
+mejor_modelo(nnet_train)
+
+```
+
+```{r}
+curvas_ROC(nnet_train, "de Red Neuronal", train, val)
+
+```
+
+```{r}
+validation(nnet_train, "de Red Neuronal", train, val)
+
+```
+
+```{r}
+resumen_nnet <- resumen(nnet_train, train, val)
+
+resumen_nnet %>% kable(escape = F) %>%
+  kable_styling("hover", full_width = F) %>%
+  add_header_above(c(" ", 
+              "Red Neuronal. Perceptrón Multicapa " = 7))
+```
+
+
+```{r}
+
+importancia_var(nnet_train, "de Red Neuronal")
+
+
+```
+
+
+## ÁRBOL C5.0
+
+Winnow es para indicar (TRUE o FALSE) si el algortmo usa winnowing (selección de atributos) antes de construir el árbol o no
+
+Trials especifica el nº de iteraciones para el boosting (proceso de combinación de múltiples árboles)
+
+Si se fija en 1 no se aplicaría boosting y solo se construye un árbol. Si se aumenta el parámetro se van construyendo árboles secuencialmente y cada árbol usa los errores de los anteriores para mejorar la precisión
+
+Por último, model es una opción (TRUE o FALSE; tree o rules) para detemrinar si queremos un árbol de decisión estandar o uno basado en reglas
+    
+```{r}
+if (entrena  == 1) {
+set.seed(7)
+
+
+  
+  clusterCPU <- makePSOCKcluster(detectCores() - 1)
+  registerDoParallel(clusterCPU)
+  
+
+  grid_c50 <- expand.grid(winnow = c(T, F),
+                        trials = c(1, 5, 10, 15, 20),
+                        model = 'tree')
+  
+
+  C5_train <- train(y~.,                                                  
+                  data = train,
+                  method = 'C5.0',
+                  metric = metrica,
+                  trControl = control,
+                  tuneLength = 10,
+                  tuneGrid = grid_c50)
+ 
+  stopCluster(clusterCPU)
+  clusterCPU <- NULL
+
+
+
+
+}
+
+```
+
+```{r}
+# saveRDS(C5_train, "Resultados_Modelos/C5_train.RDS")
+
+```
+
+
+```{r}
+grafico_metricas(C5_train)
+
+```
+
+```{r}
+resultados(  C5_train, "Árbol C5")
+
+```
+
+```{r}
+mejor_modelo(C5_train)
+
+```
+
+```{r}
+curvas_ROC(C5_train, "de Árbol C5", train, val)
+
+```
+
+```{r}
+validation(C5_train, "de Árbol C5", train, val)
+
+```
+
+```{r}
+resumen_C5 <- resumen(C5_train,train, val)
+
+resumen_C5 %>% kable(escape = F) %>%
+  kable_styling("hover", full_width = F) %>%
+  add_header_above(c(" ", 
+              "Árbol C5 " = 7))
+
+```
+
+```{r}
+importancia_var(C5_train, "de Árbol C5")
+
+```
+
+# APLICACIÓN DE MODELOS: DATOS BALANCEADOS
+
+Aplicamos los mismos modelos a los datos balanceados.
+
+## MODELO LINEAL GENERALIZADO
+
+
+```{r}
+if (entrena  == 1) {
+set.seed(7)
+
+
+
+
+clusterCPU <- makePSOCKcluster(detectCores() - 1)
+registerDoParallel(clusterCPU)
+  
+
+
+rl_train_bal <- train(y~.,
+                  data = train_balanced,
+                  method = 'glm',
+                  family = binomial,
+                  metric = metrica, 
+                  trControl = control)
+  
+rl_train_bal
+ 
+stopCluster(clusterCPU)
+clusterCPU <- NULL
+
+
+
+
+} 
+```
+
+
+```{r}
+# saveRDS(rl_train_bal, "Resultados_Modelos/rl_train_bal.RDS")
+```
+
+
+
+```{r}
+resultados(rl_train_bal , "Regresión Logística")
+
+```
+
+
+```{r}
+curvas_ROC(rl_train_bal , "Regresión logística", train_balanced, val_balanced)
+
+```
+
+```{r}
+validation(rl_train_bal , "RL", train_balanced, val_balanced)
+
+```
+
+
+```{r}
+ resumen_rl_bal <- resumen(rl_train_bal,train_balanced, val_balanced)
+
+```
+
+```{r}
+resumen_rl_bal %>% kable(escape = F) %>%
+  kable_styling("hover", full_width = F) %>%
+  add_header_above(c(" ", "Regresión logística " = 7))
+```
+
+
+```{r}
+importancia_var(rl_train_bal, "de Regresión logística ")
+
+```
+
+Al balancear los datos se ha equilibrado la diferencia entre sensibilidad y especificidad.
+
+## RANDOM FOREST
+
+
+```{r}
+if (entrena  == 1) {
+set.seed(7)
+
+
+clusterCPU <- makePSOCKcluster(detectCores()-1)
+registerDoParallel(clusterCPU)
+
+rfGrid_bal <-  expand.grid(mtry = c(2,4,6,8,10))
+
+rf_train_bal <- train(y ~ ., data = train_balanced, method = "rf", metric = metrica, trControl = control, tuneGrid = rfGrid_bal)
+
+
+
+stopCluster(clusterCPU)
+clusterCPU <- NULL
+
+
+}
+
+```
+
+```{r}
+# saveRDS(rf_train_bal, "Resultados_Modelos/rf_train_bal.RDS")
+```
+
+```{r}
+rf_train_bal
+```
+
+```{r}
+grafico_metricas(rf_train_bal)
+
+```
+
+
+```{r}
+resultados(rf_train_bal, "Random Forest")
+
+```
+
+
+```{r}
+mejor_modelo(rf_train_bal)
+
+```
+
+
+```{r}
+curvas_ROC(rf_train_bal, "de Random Forest", train_balanced, val_balanced)
+
+```
+
+
+```{r}
+validation(rf_train_bal, "RF", train_balanced, val_balanced)
+
+```
+
+```{r}
+resumen_rf_bal <- resumen(rf_train_bal,train_balanced, val_balanced)
+
+```
+
+
+
+```{r}
+resumen_rf_bal %>% kable(escape = F) %>%
+  kable_styling("hover", full_width = F) %>%
+  add_header_above(c(" ", "Random forest " = 7))
+```
+
+```{r}
+importancia_var(rf_train_bal, "RF")
+
+```
+
+## RED NEURONAL
+    
+```{r}
+if (entrena  == 1) {
+set.seed(7)
+
+
+
+clusterCPU <- makePSOCKcluster(detectCores()-1)
+registerDoParallel(clusterCPU)
+
+
+nnetGrid_bal <-  expand.grid(size = c(1:10), decay =c(0.01, 0.05, 0.5 ,0.1))
+
+nnet_train_bal <- train(y ~ ., data = train_balanced, method = "nnet", metric = metrica, trControl = control, tuneGrid = nnetGrid_bal)
+
+stopCluster(clusterCPU)
+
+
+}
+
+
+nnet_train_bal
+```
+
+```{r}
+# saveRDS(nnet_train_bal, "Resultados_Modelos/nnet_train_bal.RDS")
+
+```
+
+
+```{r}
+grafico_metricas(nnet_train_bal)
+
+```
+
+```{r}
+resultados(nnet_train_bal, "Red Neuronal")
+
+```
+
+```{r}
+mejor_modelo(nnet_train_bal)
+
+```
+
+```{r}
+curvas_ROC(nnet_train_bal, "de Red Neuronal", train_balanced, val_balanced)
+
+```
+
+```{r}
+validation(nnet_train_bal, "de Red Neuronal", train_balanced, val_balanced)
+
+```
+
+```{r}
+resumen_nnet <- resumen(nnet_train_bal, train_balanced, val_balanced)
+
+resumen_nnet %>% kable(escape = F) %>%
+  kable_styling("hover", full_width = F) %>%
+  add_header_above(c(" ", 
+              "Red Neuronal. Perceptrón Multicapa " = 7))
+```
+
+
+```{r}
+
+importancia_var(nnet_train_bal, "de Red Neuronal")
+
+
+```
+
+## ÁRBOL C5.0
+
+```{r}
+if (entrena  == 1) {
+set.seed(7)
+
+
+  
+  clusterCPU <- makePSOCKcluster(detectCores() - 1)
+  registerDoParallel(clusterCPU)
+  
+
+  grid_c50_bal <- expand.grid(winnow = c(T, F),
+                        trials = c(1, 5, 10, 15, 20),
+                        model = 'tree')
+  
+
+  C5_train_bal <- train(y~.,                                                  
+                  data = train_balanced,
+                  method = 'C5.0',
+                  metric = metrica,
+                  trControl = control,
+                  tuneLength = 10,
+                  tuneGrid = grid_c50_bal)
+ 
+  stopCluster(clusterCPU)
+  clusterCPU <- NULL
+
+
+
+
+}
+
+```
+
+```{r}
+# saveRDS(C5_train_bal, "Resultados_Modelos/C5_train_bal.RDS")
+
+```
+
+
+```{r}
+grafico_metricas(C5_train_bal)
+
+```
+
+```{r}
+resultados(  C5_train_bal, "Árbol C5")
+
+```
+
+```{r}
+mejor_modelo(C5_train_bal)
+
+```
+
+```{r}
+curvas_ROC(C5_train_bal, "de Árbol C5", train_balanced, val_balanced)
+
+```
+
+```{r}
+validation(C5_train_bal, "de Árbol C5", train_balanced, val_balanced)
+
+```
+
+```{r}
+resumen_C5 <- resumen(C5_train_bal,train_balanced, val_balanced)
+
+resumen_C5 %>% kable(escape = F) %>%
+  kable_styling("hover", full_width = F) %>%
+  add_header_above(c(" ", 
+              "Árbol C5 " = 7))
+
+```
+
+```{r}
+importancia_var(C5_train_bal, "de Árbol C5")
+
+```
+
+
+En la siguiente sección se compararán los modelos y se aplicar´ñan contrastes para analizar las diferencias entre los 4 modelos.
+
+
